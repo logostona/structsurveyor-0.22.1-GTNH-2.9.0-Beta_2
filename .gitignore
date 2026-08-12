@@ -1,0 +1,24 @@
+# Build output
+surveyor/build/
+surveyor/.gradle/
+surveyor/run/
+__pycache__/
+*.pyc
+
+# Anything produced from a personal world: these embed your seed and the
+# coordinates of everything in your save. Keep them out of a public repo.
+*_scan.json
+*_scan.csv
+scan_dim*.json
+survey_dim*.json
+structure_map.html
+*.img
+signatures.bin
+visited.txt
+
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
