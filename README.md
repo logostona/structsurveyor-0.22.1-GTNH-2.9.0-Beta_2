@@ -7,6 +7,10 @@ An in-game map on a keybind, plus offline Python tools. Everything reports **whe
 information came from and how much to trust it**, because the three ways of finding a
 structure have very different reliability.
 
+[![Download structsurveyor-0.23.0.jar](https://img.shields.io/badge/download-structsurveyor--0.23.0.jar-2ea44f?style=for-the-badge)](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.23.0.jar)
+
+One click, then drop it in `mods/`. Forge 10.13.4.1614, no dependencies.
+
 > **Prototype.** Detection rules are still being tuned against real worlds. Nothing here
 > modifies your save — the mod reads region files, and the Python tools are read-only —
 > but treat findings as leads, not gospel. Issues and world reports are welcome.
@@ -38,8 +42,9 @@ spawner clusters
 
 ## Install
 
-Drop `structsurveyor-<version>.jar` into your instance's `mods/` folder. No dependencies
-beyond Forge.
+[**Download `structsurveyor-0.23.0.jar`**](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.23.0.jar) and drop it into your instance's
+`mods/` folder. No dependencies beyond Forge. Every released build also lives in
+[`dist/`](dist/).
 
 Press **N** to open the map (rebindable under *Options → Controls → Miscellaneous*).
 
