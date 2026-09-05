@@ -49,14 +49,6 @@ public final class SeedDiagnostic {
                           List<MapGenStructure> generators) {
         long worldSeed = world.getSeed();
 
-        Random seeder = new Random(worldSeed);
-        long xmA = seeder.nextLong();
-        long zmA = seeder.nextLong();
-        // The variant Forge's chunk populate uses: forced odd.
-        seeder = new Random(worldSeed);
-        long xmB = seeder.nextLong() / 2L * 2L + 1L;
-        long zmB = seeder.nextLong() / 2L * 2L + 1L;
-
         for (int gi = 0; gi < generators.size(); gi++) {
             MapGenStructure gen = generators.get(gi);
             String tag = GeneratorRefs.tagOf(gen);
@@ -78,13 +70,37 @@ public final class SeedDiagnostic {
                 continue;
             }
 
+            // MapGenBase draws its two multipliers from `this.rand`, so they are
+            // only the same as a fresh java.util.Random's while nothing has
+            // replaced that field. Hodgepodge's fastload mixin does replace it,
+            // with an LCG whose setSeed() skips the 0x5DEECE66D scramble - which
+            // silently changes every multiplier. Both sources are searched, and
+            // the winning label says which one it was.
+            long[][] mults = new long[4][];
+            rand.setSeed(worldSeed);
+            mults[0] = new long[] { rand.nextLong(), rand.nextLong() };
+            rand.setSeed(worldSeed);
+            mults[1] = new long[] { rand.nextLong() / 2L * 2L + 1L,
+                                    rand.nextLong() / 2L * 2L + 1L };
+            Random seeder = new Random(worldSeed);
+            mults[2] = new long[] { seeder.nextLong(), seeder.nextLong() };
+            seeder = new Random(worldSeed);
+            mults[3] = new long[] { seeder.nextLong() / 2L * 2L + 1L,
+                                    seeder.nextLong() / 2L * 2L + 1L };
+            String[] multLabels = {
+                " | generator rand nextLong",
+                " | generator rand nextLong/2*2+1",
+                " | java.util.Random nextLong",
+                " | java.util.Random nextLong/2*2+1",
+            };
+
             String bestLabel = null;
             int bestHits = -1;
             List<String> perfect = new ArrayList<String>();
 
-            for (int mult = 0; mult < 2; mult++) {
-                long xm = mult == 0 ? xmA : xmB;
-                long zm = mult == 0 ? zmA : zmB;
+            for (int mult = 0; mult < mults.length; mult++) {
+                long xm = mults[mult][0];
+                long zm = mults[mult][1];
                 for (int formula = 0; formula < FORMULAS.length; formula++) {
                     for (int skips = 0; skips < 4; skips++) {
                         int hits = 0;
@@ -98,8 +114,7 @@ public final class SeedDiagnostic {
                                 // predicate threw for this chunk; treat as a miss
                             }
                         }
-                        String label = FORMULAS[formula]
-                            + (mult == 0 ? " | nextLong" : " | nextLong/2*2+1")
+                        String label = FORMULAS[formula] + multLabels[mult]
                             + " | skips=" + skips;
                         if (hits > bestHits) {
                             bestHits = hits;

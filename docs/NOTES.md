@@ -94,6 +94,9 @@ replay reproduced:
   Stronghold: 3 found    [verified 3/3 known]
 ```
 
+(That mineshaft line is the historical example that this check was built to catch;
+the cause is found and fixed — see *The mineshaft bug* below.)
+
 Read the verdict, not the count. A wrong replay still produces the right
 *density* and a believable spread, so the raw number tells you nothing about
 whether it is correct.
@@ -116,42 +119,79 @@ Twilight Forest are covered by the same command with no extra code.
 |---|---|---|
 | Overworld | Village (`MapGenVillageVN`) | verified 34/34 |
 | Overworld | Stronghold | verified 3/3 |
-| Overworld | Mineshaft (`MapGenMesaMineshaft`) | **UNRELIABLE** 1/435 |
+| Overworld | Mineshaft (`MapGenMesaMineshaft`) | verified 191/191 |
 | Nether (DIM-1) | Fortress | verified 5/5 (185 found) |
 | Twilight Forest (DIM7) | TFFeature | verified 16/16 (545 found) |
 
-Everything except mineshafts reproduces exactly. Mineshafts here are
-`ganymedes01.etfuturum.world.structure.MapGenMesaMineshaft`, which overrides only
-`getStructureStart` — the placement predicate is vanilla's.
+### The mineshaft bug: MapGenBase.rand is not a java.util.Random
 
-What has been ruled out, all reproducibly:
+Mineshafts read `UNRELIABLE` for a long time — 1/435 on the world this was first
+tested against. The cause turned out to be one line in the sweep, and it is worth
+recording in full because the misleading part was the *evidence*, not the bug.
 
-- The replay matches decompiled `MapGenBase` and `MapGenStructure` exactly,
-  including the `rand.nextInt()` consumed before the chunk test.
-- A from-scratch `java.util.Random` reimplementation in Python fails identically
-  (2/435, mean `nextDouble` 0.52 — noise), so it is not a mod-side bug.
-- `/survey diag` brute-forces 40 candidate seedings (5 formulas x 2 multiplier
-  derivations x 0-3 RNG skips) against the *live* predicate object, which catches
-  a coremod having rewritten its bytecode. Best score: 0/11.
-- Villages score EXACT MATCH in the same harness, so the harness is sound.
-- Spatially the real mineshafts show no grid or spacing rule at any period from
-  4 to 80 chunks — the placement is random in character, just not from this
-  RNG stream.
+`MapGenBase` derives two multipliers at the top of every `generate()` call:
 
-Not a fixable-by-guessing problem. `/survey diag` also reports predicate
-reachability, which distinguishes "wrong seeding" from "gated on biome/terrain
-so no seeding can work".
+```java
+this.rand.setSeed(world.getSeed());
+long xMul = this.rand.nextLong();
+long zMul = this.rand.nextLong();
+// then, per chunk in a (2*range+1)^2 neighbourhood:
+this.rand.setSeed(chunkX * xMul ^ chunkZ * zMul ^ world.getSeed());
+```
 
-Mineshafts here are `ganymedes01.etfuturum.world.structure.MapGenMesaMineshaft`,
-which only overrides `getStructureStart` — the placement predicate is vanilla's.
-The replay matches decompiled `MapGenBase` exactly, and a from-scratch
-reimplementation of `java.util.Random` in Python fails identically (2/435, mean
-`nextDouble` 0.52 — noise). Brute-forcing 5 seeding formulas x 2 multiplier
-derivations x 0-3 RNG skips x 3 probability thresholds found no correlation.
+The sweep reproduced the per-chunk line correctly but drew the two multipliers
+from a fresh `new Random(worldSeed)`. That is the same thing *only while
+`MapGenBase.rand` is a `java.util.Random`* — and in this pack it is not.
+Hodgepodge's `fastload` mixin
+(`mixins.early.minecraft.fastload.rand.MixinMapGenBase`) replaces that field with
+`com.mitchej123.hodgepodge.util.StdLCG`, whose `setSeed` stores the seed raw:
 
-These mineshafts are simply not reproducible from the placement predicate;
-they were most likely generated under a different mod or config state. Nothing
-in the replay is known to be wrong — but do not trust mineshaft output.
+```java
+public void setSeed(long seed) { this.seed = seed; }        // StdLCG
+this.seed = (seed ^ 0x5DEECE66DL) & ((1L << 48) - 1);       // java.util.Random
+```
+
+Same world seed, completely different multipliers, so every per-chunk seed was
+wrong. (`StdLCG`'s *constructor* does apply the scramble; only `setSeed` skips it,
+and `MapGenBase` uses `setSeed`.)
+
+The fix is to draw the multipliers from the generator's own `rand`, which is
+correct whether or not that field has been swapped. Against this world's 191
+recorded mineshaft starts: **191/191**, with every `nextDouble` landing under
+`0.004` (max `0.00399`, flush against the threshold, which is what a correct
+replay looks like). The old code scores 2/191 — noise at the base rate.
+
+**Why every other generator hid this.** Mineshaft is the only structure here
+whose predicate consumes the RNG stream it inherits from `MapGenBase`. Village
+calls `worldObj.setRandomSeed(...)`, stronghold precomputes its positions from
+its own `new Random(worldSeed)`, and nether fortress and `TFFeature` re-seed
+`this.rand` inside their own predicates. All of them overwrite whatever seeding
+the sweep set up, so all of them verify no matter how wrong the multipliers are.
+"Villages score EXACT MATCH, so the harness is sound" was the reasoning that kept
+this hidden the longest, and it does not follow: villages never exercise the code
+path mineshafts depend on. A generator that re-seeds is not evidence about one
+that doesn't.
+
+The earlier investigation was sound as far as it went, and each result now reads
+as a symptom rather than a dead end:
+
+- The replay does match decompiled `MapGenBase` and `MapGenStructure`, including
+  the `rand.nextInt()` consumed before the chunk test. The bug was upstream of
+  the part being checked.
+- A from-scratch `java.util.Random` in Python failed identically because it too
+  was the wrong RNG — reimplementing the standard algorithm faithfully cannot
+  help when the game is not running the standard algorithm.
+- `/survey diag` brute-forced 5 formulas x 2 multiplier derivations x 0-3 skips
+  against the live predicate, but every candidate took its multipliers from a
+  `java.util.Random`. The one dimension that mattered was held fixed. It now
+  searches multiplier *source* as well, and labels which one won.
+- "No grid or spacing rule at any period from 4 to 80 chunks" was correct and
+  expected: vanilla mineshafts have no spacing rule, only a per-chunk
+  probability.
+
+The general lesson for this pack: any 1.7.10 coremod may replace a vanilla field
+with a lookalike. Read state off the live object rather than reconstructing it
+from the class the source says should be there.
 
 ## In-game map (press N)
 
@@ -298,8 +338,8 @@ Open the file in a browser. No server, no dependencies, no network.
 | `/survey` | square | predicted from the seed, reaches unexplored terrain |
 | `scan_regions.py` | diamond | block signature — the only way to see dungeons |
 
-**Filled = trustworthy, hollow = unverified or low confidence.** A layer that is
-entirely unreliable (predicted mineshafts) starts switched **off**; mixed layers
+**Filled = trustworthy, hollow = unverified or low confidence.** A layer whose
+sweep came back `UNRELIABLE` starts switched **off**; mixed layers
 stay on but the sidebar says how many entries are not to be trusted, e.g.
 `Mineshaft  39 unverified  56`. A wrong replay can never quietly put fake markers
 on the map.

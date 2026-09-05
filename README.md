@@ -152,14 +152,18 @@ Note it is **not** `java.io.tmpdir`.
 
 [docs/NOTES.md](docs/NOTES.md) has the full account: what each signature keys on, every
 rule that exists because of a specific false positive, and the investigations that did
-*not* pan out — including one generator whose recorded output still cannot be reproduced
-from its own documented algorithm.
+*not* pan out — including the coremod-swapped RNG that made mineshaft prediction look
+unfixable until it wasn't.
 
 Worth knowing up front:
 
-- **Mineshafts are `UNRELIABLE` in prediction.** The replay matches decompiled
-  `MapGenBase` exactly and a from-scratch reimplementation fails identically, so the
-  cause is elsewhere. They are flagged, not hidden.
+- **Mineshafts used to predict `UNRELIABLE`, and now verify.** The sweep drew
+  `MapGenBase`'s two seed multipliers from a fresh `java.util.Random`; hodgepodge's
+  fastload mixin replaces `MapGenBase.rand` with an LCG whose `setSeed` skips the
+  `0x5DEECE66D` scramble, so every per-chunk seed was wrong. Taking the multipliers
+  from the generator's own RNG reproduces 191/191 recorded starts.
+  [docs/NOTES.md](docs/NOTES.md) has the full account — including why every other
+  generator verified anyway and hid it.
 - **Roguelike variants** are only named when there is evidence — an enchantment table
   means wizard tower. Guessing the building from the biome produced confident, wrong
   labels, so it was removed.

@@ -41,6 +41,8 @@ public class SurveyTask {
         final MapGenStructure gen;
         final String tag;
         final Random rand;
+        /** MapGenBase's two per-seed multipliers, drawn from this generator's own rand. */
+        final long xMul, zMul;
         final List<int[]> hits = new ArrayList<int[]>();
         boolean broken;
         String error;
@@ -52,10 +54,22 @@ public class SurveyTask {
         /** False if this generator has never run here - an inherited, unused field. */
         boolean active = true;
 
-        Target(MapGenStructure gen, String tag, Random rand) {
+        Target(MapGenStructure gen, String tag, Random rand, long worldSeed) {
             this.gen = gen;
             this.tag = tag;
             this.rand = rand;
+
+            // MapGenBase draws these from `this.rand` at the top of every
+            // generate() call. Drawing them from a fresh java.util.Random
+            // instead looks equivalent and is not: hodgepodge's fastload mixin
+            // replaces MapGenBase.rand with StdLCG, whose setSeed() stores the
+            // seed raw rather than scrambling it with 0x5DEECE66D. Same world
+            // seed, completely different multipliers. Taking them from the
+            // generator's own rand is correct with or without that mixin, and
+            // survives whatever the next coremod swaps in.
+            rand.setSeed(worldSeed);
+            this.xMul = rand.nextLong();
+            this.zMul = rand.nextLong();
         }
     }
 
@@ -67,8 +81,6 @@ public class SurveyTask {
     private final List<Target> targets = new ArrayList<Target>();
 
     private final long worldSeed;
-    private final long xMultiplier;
-    private final long zMultiplier;
 
     private final long totalChunks;
     private long processed;
@@ -88,20 +100,14 @@ public class SurveyTask {
         this.chunksPerTick = chunksPerTick;
         this.worldSeed = world.getSeed();
 
-        // MapGenBase derives two multipliers from the world seed once per
-        // generate() call. They depend only on the seed, so they are identical
-        // for every generator and can be computed once here.
-        Random seeder = new Random(worldSeed);
-        this.xMultiplier = seeder.nextLong();
-        this.zMultiplier = seeder.nextLong();
-
         for (MapGenStructure gen : generators) {
             try {
                 // Read this before binding - bindWorld would overwrite the field
                 // this check depends on.
                 boolean active = GeneratorRefs.hasRun(gen);
                 GeneratorRefs.bindWorld(gen, world);
-                Target t = new Target(gen, GeneratorRefs.tagOf(gen), GeneratorRefs.randOf(gen));
+                Target t = new Target(gen, GeneratorRefs.tagOf(gen),
+                                      GeneratorRefs.randOf(gen), worldSeed);
                 t.active = active;
                 targets.add(t);
             } catch (Throwable t) {
@@ -173,7 +179,7 @@ public class SurveyTask {
                 // chunk. Getting this sequence wrong silently produces
                 // plausible-looking but wrong results, which is what
                 // /survey verify exists to catch.
-                t.rand.setSeed((long) chunkX * xMultiplier ^ (long) chunkZ * zMultiplier ^ worldSeed);
+                t.rand.setSeed((long) chunkX * t.xMul ^ (long) chunkZ * t.zMul ^ worldSeed);
                 t.rand.nextInt();
                 if (GeneratorRefs.canSpawnAt(t.gen, chunkX, chunkZ)) {
                     t.hits.add(new int[] { chunkX, chunkZ });
