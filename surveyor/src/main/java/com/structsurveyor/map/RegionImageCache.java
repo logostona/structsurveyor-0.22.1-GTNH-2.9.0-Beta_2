@@ -39,6 +39,33 @@ final class RegionImageCache {
         return new File(dir, "r." + rx + "." + rz + ".img");
     }
 
+    /**
+     * Region keys already on disk, packed the way MapTiles keys them.
+     *
+     * With no region files to list, this is what tells the map which parts of a
+     * remote world have been seen before, so reconnecting shows the terrain
+     * gathered on earlier visits instead of starting blank.
+     */
+    java.util.Set<Long> knownRegions() {
+        java.util.Set<Long> out = new java.util.HashSet<Long>();
+        File[] files = dir.listFiles();
+        if (files == null) return out;
+        for (File f : files) {
+            String n = f.getName();
+            if (!n.startsWith("r.") || !n.endsWith(".img")) continue;
+            int d1 = n.indexOf('.'), d2 = n.indexOf('.', d1 + 1), d3 = n.indexOf('.', d2 + 1);
+            if (d1 < 0 || d2 < 0 || d3 < 0) continue;
+            try {
+                long rx = Integer.parseInt(n.substring(d1 + 1, d2));
+                long rz = Integer.parseInt(n.substring(d2 + 1, d3));
+                out.add(rx & 0xFFFFFFFFL | (rz & 0xFFFFFFFFL) << 32);
+            } catch (NumberFormatException ignored) {
+                // not a name we wrote
+            }
+        }
+        return out;
+    }
+
     /** Pixels for a region, or null if absent or out of date. */
     int[] load(int rx, int rz, long sourceModified) {
         File f = fileFor(rx, rz);

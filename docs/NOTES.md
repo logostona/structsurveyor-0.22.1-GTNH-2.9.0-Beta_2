@@ -367,3 +367,54 @@ Two non-obvious settings in `surveyor/gradle.properties`:
 - `enableModernJavaSyntax = jvmDowngrader` — the default `jabel` mode needs an
   Azul Zulu JDK, and `cdn.azul.com` is unreachable from this network. The
   downgrader reaches the same Java 8 bytecode target using the local JDK.
+
+---
+
+## Working without region files
+
+Everything the map does started from one assumption: there is a save on disk. Region
+decoding, the image cache keyed on a region file's mtime, whole-world scanning, the
+column analysis behind teleport — all of it reads `.mca` files. On a server you do not
+own, none of those exist. The client holds chunks in memory for as long as they are in
+view distance, and that is the entire world as far as this machine is concerned.
+
+Three things followed from that.
+
+**One detector, two sources.** The obvious move — write a second scanner against live
+`Chunk` objects — would have meant two implementations of every signature, drifting apart
+with each rule added. Instead `LiveChunks` rebuilds the small part of the on-disk chunk
+format that `SignatureScan` actually reads: `Sections` with `Blocks`/`Add`, `TileEntities`,
+`Biomes`. Nothing else is written, because nothing else is read. The scan cannot tell the
+difference, and there is still only one copy of the rules.
+
+The gap this leaves is biome ids above 255: the live path writes the chunk's own byte
+array rather than the 16-bit `Biomes16v2` that EndlessIDs stores on disk, so a wide biome
+id aliases. It affects the *label* on a Roguelike finding, never its coordinates.
+
+**Pixels had to stop being texture memory.** `Region.pixels` used to be
+`DynamicTexture.getTextureData()` — the texture *was* the buffer, so nothing could be
+recorded without allocating a megabyte of VRAM for it. Harvesting terrain with the map
+closed would have meant a video texture per region for a screen nobody was looking at.
+They are separate now: pixels are plain heap, and a texture is created on first draw.
+
+**The cache stopped being an optimisation.** In singleplayer, deleting
+`surveyor/cache/` costs a rebuild. On a remote server it is the only record that terrain
+ever existed — the chunks it came from were unloaded long ago. Hence live regions are
+written on a timer, on eviction, and on disconnect, and the cache is keyed by server
+address so one server's map can never be shown for another. Their entries carry a source
+timestamp of `0`, since there is no file whose mtime could invalidate them.
+
+### What deliberately does not work remotely
+
+`/survey` is a server command that reads the generators' own placement predicates; a
+client has neither the generators nor the seed. Recorded structures come from
+`MapGenStructureData`, which lives server-side. Both report as unavailable rather than
+returning an empty result that would read as "no structures here".
+
+### The scan switch
+
+`scanOnRemoteServers` defaults to false. The mapping half is ordinary minimap behaviour;
+the scanning half reads loaded chunks for spawners and buried blocks, which finds things
+through rock. That is the part servers have rules about, so it is opt-in and says so in
+both the config comment and the map's own status line.
+

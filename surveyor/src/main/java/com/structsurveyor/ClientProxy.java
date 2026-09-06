@@ -11,6 +11,8 @@ import cpw.mods.fml.common.gameevent.InputEvent;
 import org.lwjgl.input.Keyboard;
 
 import com.structsurveyor.map.GuiSurveyMap;
+import com.structsurveyor.map.MapCache;
+import com.structsurveyor.map.MapTiles;
 
 public class ClientProxy extends CommonProxy {
 
@@ -45,11 +47,51 @@ public class ClientProxy extends CommonProxy {
         com.structsurveyor.map.MapCache.requestInvalidate();
     }
 
-    /** Performs deferred cache invalidation on the thread that owns the GL context. */
+    /**
+     * Deferred cache invalidation on the thread that owns the GL context, and
+     * the live terrain harvest.
+     */
     @SubscribeEvent
     public void onClientTick(cpw.mods.fml.common.gameevent.TickEvent.ClientTickEvent event) {
-        if (event.phase == cpw.mods.fml.common.gameevent.TickEvent.Phase.END) {
-            com.structsurveyor.map.MapCache.tick();
+        if (event.phase != cpw.mods.fml.common.gameevent.TickEvent.Phase.END) return;
+        MapCache.tick();
+        harvest();
+    }
+
+    /** Ticks between harvest passes; terrain does not change fast enough to want more. */
+    private static final int HARVEST_INTERVAL = 20;
+    private int harvestCountdown;
+
+    /**
+     * Copy the chunks around the player out of the loaded world.
+     *
+     * On a server someone else runs there are no region files, so the only
+     * terrain that will ever exist client-side is what gets taken from chunks
+     * while they are loaded. Doing that only while the map is open would map the
+     * places you stopped to look at it and nothing in between - which is not a
+     * map so much as a set of postcards.
+     *
+     * Skipped in singleplayer, where the save on disk is complete and
+     * authoritative: nothing to gain, and it would build map state for a player
+     * who never opens the map.
+     */
+    private void harvest() {
+        if (!com.structsurveyor.Config.enableMap
+            || !com.structsurveyor.Config.harvestWhileWalking) return;
+        if (--harvestCountdown > 0) return;
+        harvestCountdown = HARVEST_INTERVAL;
+        Minecraft mc = Minecraft.getMinecraft();
+        if (mc.theWorld == null || mc.thePlayer == null || mc.isSingleplayer()) return;
+        if (mc.currentScreen instanceof GuiSurveyMap) return;   // it harvests already
+        try {
+            MapTiles tiles = MapCache.tiles(mc.thePlayer.dimension);
+            if (!tiles.remote()) return;
+            tiles.patchFromLiveWorld(mc.theWorld,
+                ((int) Math.floor(mc.thePlayer.posX)) >> 4,
+                ((int) Math.floor(mc.thePlayer.posZ)) >> 4,
+                com.structsurveyor.Config.harvestRadiusChunks, MapTiles.frameBudget());
+        } catch (Throwable t) {
+            com.structsurveyor.StructureSurveyor.LOG.debug("live harvest failed", t);
         }
     }
 

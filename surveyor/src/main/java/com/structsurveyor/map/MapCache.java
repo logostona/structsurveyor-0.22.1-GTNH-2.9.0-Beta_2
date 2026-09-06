@@ -40,17 +40,44 @@ public final class MapCache {
         }
     }
 
-    /** Where persistent caches live: gamedir/surveyor/cache/<save>/DIM<n>. */
+    /** Where persistent caches live: gamedir/surveyor/cache/<world>/DIM<n>. */
     private static File cacheDir(int dimension) {
-        File root = DimensionManager.getCurrentSaveRootDirectory();
-        String save = root == null ? "unknown" : root.getName().replaceAll("[^A-Za-z0-9._-]", "_");
         return new File(new File(Minecraft.getMinecraft().mcDataDir,
-                                 "surveyor/cache/" + save), "DIM" + dimension);
+                                 "surveyor/cache/" + worldName()), "DIM" + dimension);
+    }
+
+    /**
+     * A folder name for the world being played.
+     *
+     * On a server the client owns no save directory, so the address identifies
+     * the world instead. Getting this wrong matters more there than in
+     * singleplayer: terrain harvested from live chunks exists nowhere else, so
+     * showing one server's map on another would be both wrong and unfixable.
+     */
+    private static String worldName() {
+        File root = DimensionManager.getCurrentSaveRootDirectory();
+        if (root != null) return sanitize(root.getName());
+        try {
+            // func_147104_D is getCurrentServerData; 1.7.10's mappings leave it
+            // unnamed, and the SRG name is what reobfuscation expects anyway.
+            net.minecraft.client.multiplayer.ServerData sd =
+                Minecraft.getMinecraft().func_147104_D();
+            if (sd != null && sd.serverIP != null && !sd.serverIP.isEmpty()) {
+                return "server_" + sanitize(sd.serverIP);
+            }
+        } catch (Throwable ignored) {
+            // no server data yet; fall through
+        }
+        return "unknown";
+    }
+
+    private static String sanitize(String s) {
+        return s.replaceAll("[^A-Za-z0-9._-]", "_");
     }
 
     private static void checkWorld() {
         File root = DimensionManager.getCurrentSaveRootDirectory();
-        String key = root == null ? "none" : root.getAbsolutePath();
+        String key = root == null ? worldName() : root.getAbsolutePath();
         if (worldKey != null && !worldKey.equals(key)) invalidate();
         worldKey = key;
     }

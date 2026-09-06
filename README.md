@@ -7,7 +7,7 @@ An in-game map on a keybind, plus offline Python tools. Everything reports **whe
 information came from and how much to trust it**, because the three ways of finding a
 structure have very different reliability.
 
-[![Download structsurveyor-0.23.0.jar](https://img.shields.io/badge/download-structsurveyor--0.23.0.jar-2ea44f?style=for-the-badge)](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.23.0.jar)
+[![Download structsurveyor-0.24.0.jar](https://img.shields.io/badge/download-structsurveyor--0.24.0.jar-2ea44f?style=for-the-badge)](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.24.0.jar)
 
 One click, then drop it in `mods/`. Forge 10.13.4.1614, no dependencies.
 
@@ -42,7 +42,7 @@ spawner clusters
 
 ## Install
 
-[**Download `structsurveyor-0.23.0.jar`**](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.23.0.jar) and drop it into your instance's
+[**Download `structsurveyor-0.24.0.jar`**](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.24.0.jar) and drop it into your instance's
 `mods/` folder. No dependencies beyond Forge. Every released build also lives in
 [`dist/`](dist/).
 
@@ -99,22 +99,54 @@ python make_map.py                   # merge everything into one HTML map
 
 ---
 
-## Server support
+## Servers
 
-**Partial.** The `/survey` command works on a dedicated server; the map does not.
+**The map works on servers you do not own**, client-side, with nothing installed at the
+other end. `acceptableRemoteVersions = "*"`, so the mod never blocks joining a server that
+lacks it.
 
-| | |
-|---|---|
-| Singleplayer / LAN | everything works |
-| Dedicated server, mod installed | `/survey` works, writes JSON server-side |
-| Client on a remote server | map opens but stays empty |
+What changes is where the data comes from. In singleplayer the mod reads the save on disk,
+so it can show terrain you walked through months ago and predict structures you have never
+been near. On someone else's server none of that exists locally: the only world data on
+your machine is the chunks the server has sent you. So the map records those as you travel
+and remembers them.
 
-The map reads region files from the local save and queries the integrated server for
-recorded structures. A remote client has neither, so it shows *"No terrain data (remote
-server?)"*. Making it work would need findings sent over the network and region data read
-server-side — not done yet.
+| | Terrain | Recorded | Predicted | Scanned |
+|---|---|---|---|---|
+| Singleplayer / LAN host | whole save | yes | yes | whole save |
+| Dedicated server, mod installed | whole save | yes | `/survey`, server-side | whole save |
+| **Any server, client-side only** | **as you explore** | no | no | **as you explore, off by default** |
 
-`acceptableRemoteVersions = "*"`, so the mod never blocks joining a server that lacks it.
+- **Terrain** fills in within view distance as you move, with the map closed as well as
+  open, and persists to `surveyor/cache/server_<address>/` so reconnecting picks up where
+  you left off. Each server address gets its own folder.
+- **Recorded** and **Predicted** need the server's own generator objects and world seed,
+  neither of which a client has. `/survey` is a server command; on a server without the
+  mod it simply does not exist. The map says so rather than showing an empty grid.
+- **Scanned** signature detection works — the same rules, reading loaded chunks instead of
+  region files — but ships **off** for remote servers. See below.
+- **Teleport** falls back to `/tp`, which the server will refuse unless you have
+  permission for it.
+
+### `scanOnRemoteServers` is off by default
+
+Drawing terrain you have walked through is what every minimap does. Reading those same
+chunks for spawners and buried blocks is a different thing: it finds dungeons through
+solid rock, and plenty of servers class that as cheating no matter what the mod is called.
+
+So it is a separate switch, off until you set it:
+
+```
+# config/structsurveyor.cfg
+server {
+    B:scanOnRemoteServers=false
+    B:harvestWhileWalking=true
+    I:harvestRadiusChunks=8
+}
+```
+
+Whether your server allows it is between you and its rules. Nothing here hides itself from
+anti-cheat, and nothing here asks the server for data it did not already send.
 
 ---
 

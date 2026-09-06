@@ -31,6 +31,20 @@ public final class Config {
     public static int scanRadiusBlocks = 1000;
     /** Fill opacity, 0-255, for candidate markers that are not confirmed. */
     public static int candidateAlpha = 60;
+    /** Record terrain from loaded chunks on servers, with the map closed. */
+    public static boolean harvestWhileWalking = true;
+    /** Chunk radius recorded around the player while walking a server. */
+    public static int harvestRadiusChunks = 8;
+    /**
+     * Run signature detection on a server you do not own.
+     *
+     * Off by default, and deliberately so. Mapping terrain you have walked
+     * through is what any minimap does, but reading loaded chunks for spawners
+     * and buried blocks finds things through solid rock, and plenty of servers
+     * treat that as cheating whatever the mod is called. Turning it on is a
+     * choice about that server's rules, so it is left to be made explicitly.
+     */
+    public static boolean scanOnRemoteServers = false;
 
     private Config() {}
 
@@ -61,6 +75,24 @@ public final class Config {
                 candidateAlpha, 0, 255,
                 "Fill opacity of candidate markers - findings that are unverified or "
                     + "that a stronger signature overlaps. 0 leaves only the outline.");
+            harvestWhileWalking = cfg.getBoolean("harvestWhileWalking", "server",
+                harvestWhileWalking,
+                "On a server, record terrain from loaded chunks as you travel, even "
+                    + "with the map closed. Without this the map only fills in while "
+                    + "it is open. No effect in singleplayer, where region files are "
+                    + "read directly.");
+            harvestRadiusChunks = cfg.getInt("harvestRadiusChunks", "server",
+                harvestRadiusChunks, 2, 16,
+                "Chunk radius recorded around you while travelling a server. Larger "
+                    + "captures more per pass; it cannot exceed the server's view "
+                    + "distance, since unsent chunks do not exist client-side.");
+            scanOnRemoteServers = cfg.getBoolean("scanOnRemoteServers", "server",
+                scanOnRemoteServers,
+                "Run block and spawner detection on servers you do not own. OFF by "
+                    + "default: mapping terrain you have walked through is ordinary "
+                    + "minimap behaviour, but scanning loaded chunks reveals dungeons "
+                    + "and spawners through solid rock, which many servers forbid. "
+                    + "Enabling it is your call and your responsibility.");
             scanRadiusBlocks = cfg.getInt("scanRadiusBlocks", "general",
                 scanRadiusBlocks, 64, 64000,
                 "Default radius in blocks for the scan-around-me key on the map. "

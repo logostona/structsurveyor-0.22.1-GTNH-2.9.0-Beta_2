@@ -94,7 +94,13 @@ public class GuiSurveyMap extends GuiScreen {
         radiusField.setText(String.valueOf(scanRadius));
         refreshMarkers();
         if (!tiles.available()) {
-            status = "No terrain data (remote server?) - markers only";
+            status = "No terrain data for this dimension";
+        } else if (tiles.remote()) {
+            // Be explicit about it. A map that silently shows only part of the
+            // world reads as a broken map, not a limited one.
+            status = com.structsurveyor.Config.scanOnRemoteServers
+                ? "Server world - mapping and scanning what you explore"
+                : "Server world - mapping what you explore (scan off, see config)";
         } else if (markers.isEmpty()) {
             status = "No structures known here. Run /survey to predict some.";
         }
@@ -369,13 +375,17 @@ public class GuiSurveyMap extends GuiScreen {
         // chunks with no heightmap untravelable.
         int destY = tiles == null ? -1 : tiles.safeStandY(m.x, m.z);
         if (destY <= 0) {
-            status = "That chunk has not generated yet - nothing to stand on";
+            status = tiles != null && tiles.remote()
+                ? "Out of range - the server only sends chunks near you"
+                : "That chunk has not generated yet - nothing to stand on";
             return;
         }
         // Close the map before moving. An earlier edit removed this line, so the
         // screen stayed open over the new location.
         mc.displayGuiScreen(null);
         if (!teleportServerSide(m.x, destY, m.z)) {
+            // A server we do not run: /tp is the only route, and it will be
+            // refused unless the player has the permission for it.
             mc.thePlayer.sendChatMessage("/tp " + m.x + " " + destY + " " + m.z);
         }
     }
@@ -758,7 +768,11 @@ public class GuiSurveyMap extends GuiScreen {
             // Bounded scan around the player: the whole-world pass is overkill
             // when you only care about what is within reach.
             Minecraft mcz = Minecraft.getMinecraft();
-            if (tiles != null && tiles.available() && mcz.thePlayer != null) {
+            if (tiles != null && tiles.remote()) {
+                // There is no stored world to sweep - only the chunks the server
+                // has sent, which the live pass is already reading every tick.
+                status = "Server world - scanning follows you; no radius to sweep";
+            } else if (tiles != null && tiles.available() && mcz.thePlayer != null) {
                 int px = (int) Math.floor(mcz.thePlayer.posX);
                 int pz = (int) Math.floor(mcz.thePlayer.posZ);
                 int regions = tiles.scanRadius(px, pz, scanRadius);
@@ -804,7 +818,9 @@ public class GuiSurveyMap extends GuiScreen {
         if (key == Keyboard.KEY_S) {
             // Imagery only covers what has been panned over; this walks every
             // region file for signatures without building textures for them.
-            if (tiles != null && tiles.available()) {
+            if (tiles != null && tiles.remote()) {
+                status = "Server world - nothing stored to sweep; keep exploring";
+            } else if (tiles != null && tiles.available()) {
                 tiles.scanEverything();
                 status = "";
             }

@@ -127,10 +127,32 @@ public class MapTiles {
     private List<int[]> visibleCache;
     private double visKey0, visKey1, visKey2, visKey3;
 
+    /**
+     * No region files to read: a server someone else runs. Terrain then has to
+     * come from the chunks the server has actually sent us, which means the map
+     * only ever shows where the player has been - and has to remember it, since
+     * nothing on this machine will write it down otherwise.
+     */
+    private final boolean remote;
+    /** Regions built from the live world, standing in for the file listing. */
+    private final java.util.Set<Long> liveRegions = new java.util.HashSet<Long>();
+    /** Live-painted regions owing a cache write. */
+    private final java.util.Set<Long> liveDirty = new java.util.HashSet<Long>();
+    private long liveFlushedAt;
+    /** The world the last live pass read, for lookups that have no file to use. */
+    private net.minecraft.world.World liveWorld;
+
     public MapTiles(File dimensionDir, File cacheDir) {
         this.dimensionDir = dimensionDir;
         this.imageCache = (cacheDir == null || !com.structsurveyor.Config.cacheToDisk)
             ? null : new RegionImageCache(cacheDir);
+        this.remote = dimensionDir == null || !new File(dimensionDir, "region").isDirectory();
+        if (remote && imageCache != null) liveRegions.addAll(imageCache.knownRegions());
+    }
+
+    /** True when the map is being built from live chunks rather than files. */
+    public boolean remote() {
+        return remote;
     }
 
     public void setScan(SignatureScan scan) {
@@ -138,7 +160,10 @@ public class MapTiles {
     }
 
     public boolean available() {
-        return dimensionDir != null && new File(dimensionDir, "region").isDirectory();
+        // Remote counts as available: there is nothing to read yet, but the
+        // live pass will fill in whatever the server lets the client see.
+        return remote || (dimensionDir != null
+            && new File(dimensionDir, "region").isDirectory());
     }
 
     private static long chunkKey(int cx, int cz) {
@@ -162,6 +187,7 @@ public class MapTiles {
      * texture per region that was never going to contain anything.
      */
     private java.util.Set<Long> existingRegions() {
+        if (remote) return liveRegions;
         long now = System.currentTimeMillis();
         if (existing != null && now - existingCheckedAt < 5000L) return existing;
         java.util.Set<Long> set = new java.util.HashSet<Long>();
@@ -238,16 +264,61 @@ public class MapTiles {
         Region r = regions.get(key(rx, rz));
         if (r == null) {
             if (!allowCreate) return -1;
-            if (regions.size() >= maxRegions()) evictOldest();
-            r = new Region(rx, rz);
-            regions.put(key(rx, rz), r);
-            submitImagery(rx, rz);
-        } else if (r.texture == null && !inFlight.contains(key(rx, rz))) {
+            if (remote) {
+                // Recovering a cached region means an inflate on this thread, so
+                // let the frame budget decide how many. Zooming out over a
+                // long-explored server otherwise loads them all in one frame.
+                if (!canSpend(budget)) return -1;
+                budget[0] -= 8;
+                r = ensureRegion(rx, rz);      // painted by the live pass instead
+            } else {
+                if (regions.size() >= maxRegions()) evictOldest();
+                r = new Region(rx, rz);
+                regions.put(key(rx, rz), r);
+                submitImagery(rx, rz);
+            }
+        } else if (!remote && r.pixels == null && !inFlight.contains(key(rx, rz))) {
             // Its decode never arrived - a failure, or a result dropped when the
             // world changed. Ask again rather than leaving a permanent hole.
             submitImagery(rx, rz);
         }
+        // A texture is only allocated once there is something to put in it, so
+        // regions harvested with the map closed cost heap but no video memory.
+        if (r.texture == null && r.pixels != null) {
+            r.texture = new DynamicTexture(REGION_PX, REGION_PX);
+            upload(r);
+        }
         return r.texture == null ? -1 : r.texture.getGlTextureId();
+    }
+
+    /** Copy a region's pixels into its texture, if it has one yet. */
+    private static void upload(Region r) {
+        if (r.texture == null || r.pixels == null) return;
+        int[] dst = r.texture.getTextureData();
+        System.arraycopy(r.pixels, 0, dst, 0, dst.length);
+        r.texture.updateDynamicTexture();
+    }
+
+    /**
+     * A region to paint live chunks into, recovering an earlier visit's pixels
+     * from the cache first.
+     *
+     * The cache read is synchronous, which is normally what the decode worker is
+     * for - but it happens once per 512 blocks travelled, and the alternative
+     * (letting the worker deliver it later) would overwrite whatever the live
+     * pass had already painted in the meantime.
+     */
+    private Region ensureRegion(int rx, int rz) {
+        long k = key(rx, rz);
+        Region r = regions.get(k);
+        if (r != null) return r;
+        if (regions.size() >= maxRegions()) evictOldest();
+        r = new Region(rx, rz);
+        if (imageCache != null) r.pixels = imageCache.load(rx, rz, 0L);
+        if (r.pixels == null) r.pixels = new int[REGION_PX * REGION_PX];
+        regions.put(k, r);
+        if (liveRegions.add(k)) visibleCache = null;
+        return r;
     }
 
     /** Queue a region for decoding, unless it is already on its way. */
@@ -288,6 +359,7 @@ public class MapTiles {
         }
         Decoded d = new Decoded(rx, rz,
             wantPixels ? new int[REGION_PX * REGION_PX] : null, false);
+        if (remote) return d;               // no files; the live pass paints it
         if (workerReader == null) workerReader = new RegionReader(dimensionDir);
 
         // Heights and biomes are collected for the whole region first, then
@@ -312,6 +384,7 @@ public class MapTiles {
 
     /** Detection only, for a region whose imagery came from cache. */
     private void collectHits(int rx, int rz, Decoded d) {
+        if (remote) return;                 // detection rides the live pass
         if (scan == null || !com.structsurveyor.Config.enableScan) return;
         if (workerReader == null) workerReader = new RegionReader(dimensionDir);
         for (int idx = 0; idx < 1024; idx++) {
@@ -341,12 +414,9 @@ public class MapTiles {
         while ((d = ready.poll()) != null) {
             Region r = regions.get(key(d.rx, d.rz));
             if (r != null && d.pixels != null) {
-                if (r.texture == null) {
-                    r.texture = new DynamicTexture(REGION_PX, REGION_PX);
-                    r.pixels = r.texture.getTextureData();
-                }
+                if (r.pixels == null) r.pixels = new int[REGION_PX * REGION_PX];
                 System.arraycopy(d.pixels, 0, r.pixels, 0, r.pixels.length);
-                r.texture.updateDynamicTexture();
+                upload(r);
                 r.cursor = 1024;
                 r.complete = true;
                 r.fromCache = d.fromCache;
@@ -399,10 +469,16 @@ public class MapTiles {
         if (!it.hasNext()) return;
         Region victim = it.next().getValue();
         it.remove();
+        // Live pixels exist nowhere else, so dropping them silently would punch
+        // a hole in explored map every time the player travelled far.
+        if (liveDirty.remove(key(victim.rx, victim.rz))) writeLive(victim);
         if (victim.texture != null) victim.texture.deleteGlTexture();
     }
 
     private long sourceModified(int rx, int rz) {
+        // Nothing on disk to compare against, so a live region's cache never
+        // goes stale: it is the only record of that terrain there is.
+        if (remote) return 0L;
         return new File(new File(dimensionDir, "region"),
                         "r." + rx + "." + rz + ".mca").lastModified();
     }
@@ -539,6 +615,7 @@ public class MapTiles {
      * blocks would still decode everything around it.
      */
     public int scanRadius(int blockX, int blockZ, int radiusBlocks) {
+        if (remote) return 0;               // only loaded chunks exist to scan
         int minCX = (blockX - radiusBlocks) >> 4, maxCX = (blockX + radiusBlocks) >> 4;
         int minCZ = (blockZ - radiusBlocks) >> 4, maxCZ = (blockZ + radiusBlocks) >> 4;
         java.util.Set<Long> present = existingRegions();
@@ -554,6 +631,7 @@ public class MapTiles {
     }
 
     public void scanEverything() {
+        if (remote) return;                 // there are no region files here
         File dir = new File(dimensionDir, "region");
         File[] files = dir.listFiles();
         if (files == null) return;
@@ -630,9 +708,7 @@ public class MapTiles {
      */
     /** Terrain height at a column, or -1 if that chunk was never generated. */
     public int surfaceY(int blockX, int blockZ) {
-        if (dimensionDir == null) return -1;
-        if (mainReader == null) mainReader = new RegionReader(dimensionDir);
-        NBTTagCompound level = mainReader.readChunk(blockX >> 4, blockZ >> 4);
+        NBTTagCompound level = levelAt(blockX >> 4, blockZ >> 4);
         if (level == null) return -1;
         int[] height = level.getIntArray("HeightMap");
         if (height == null || height.length < 256) return -1;
@@ -657,18 +733,40 @@ public class MapTiles {
     public void patchFromLiveWorld(net.minecraft.world.World world, int centerCX,
                                    int centerCZ, int radius, long[] budget) {
         if (world == null) return;
+        liveWorld = world;
+        boolean liveScan = com.structsurveyor.Config.enableScan && scan != null
+            && scan.wantsChunks()
+            && (!remote || com.structsurveyor.Config.scanOnRemoteServers);
         java.util.Set<Long> dirtyRegions = null;
         for (int cx = centerCX - radius; cx <= centerCX + radius; cx++) {
             for (int cz = centerCZ - radius; cz <= centerCZ + radius; cz++) {
                 if (!canSpend(budget)) break;
                 long ck = chunkKey(cx, cz);
                 if (livePatched.contains(ck)) continue;
-                Region r = regions.get(key(cx >> 5, cz >> 5));
+                // With no region files, this pass is the only thing that ever
+                // creates a region, so it has to be allowed to.
+                Region r = remote ? ensureRegion(cx >> 5, cz >> 5)
+                                  : regions.get(key(cx >> 5, cz >> 5));
                 if (r == null || r.pixels == null) continue;
                 int bx = cx << 4, bz = cz << 4;
                 if (!world.blockExists(bx, 64, bz)) continue;      // not loaded
                 livePatched.add(ck);
                 budget[0]--;
+
+                // Chunks the player is standing in are exactly the ones the
+                // region scan cannot reach - unsaved in singleplayer, nonexistent
+                // on someone else's server - so detection runs here too. Same
+                // rules, same code: the chunk is presented in the on-disk shape.
+                if (liveScan && !scan.alreadyScanned(cx, cz)) {
+                    try {
+                        NBTTagCompound level = LiveChunks.levelOf(
+                            world.getChunkFromChunkCoords(cx, cz));
+                        if (level != null) scan.scanChunk(level, cx, cz);
+                    } catch (Throwable t) {
+                        StructureSurveyor.LOG.debug("live scan failed " + cx + "," + cz);
+                    }
+                    budget[0] -= 3;                 // costs more than painting
+                }
 
                 int px0 = (cx & 31) * 16, pz0 = (cz & 31) * 16;
                 for (int z = 0; z < 16; z++) {
@@ -704,9 +802,45 @@ public class MapTiles {
         if (dirtyRegions != null) {
             for (Long k : dirtyRegions) {
                 Region r = regions.get(k);
-                if (r != null && r.texture != null) r.texture.updateDynamicTexture();
+                if (r == null) continue;
+                upload(r);
+                if (remote) liveDirty.add(k);
             }
         }
+        flushLive(false);
+    }
+
+    /**
+     * Write live-painted regions back to the cache.
+     *
+     * On a remote server the cache is not an optimisation, it is the archive:
+     * nothing else on this machine records terrain the server sent. Throttled,
+     * because each region is a megabyte and the player crosses one every few
+     * hundred blocks.
+     */
+    private void flushLive(boolean force) {
+        if (!remote || imageCache == null || liveDirty.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (!force && now - liveFlushedAt < 20000L) return;
+        liveFlushedAt = now;
+        for (Long k : new java.util.ArrayList<Long>(liveDirty)) {
+            Region r = regions.get(k);
+            if (r != null) writeLive(r);
+        }
+        liveDirty.clear();
+    }
+
+    /** Hand one region's pixels to the cache writer thread. */
+    private void writeLive(Region r) {
+        if (imageCache == null || r.pixels == null) return;
+        final int[] snapshot = r.pixels.clone();
+        final int rx = r.rx, rz = r.rz;
+        WRITER.submit(new Runnable() {
+            @Override
+            public void run() {
+                imageCache.save(rx, rz, 0L, snapshot);
+            }
+        });
     }
 
     /** Let the live pass run again, e.g. after a manual rescan. */
@@ -725,10 +859,8 @@ public class MapTiles {
      * the column is analysed on demand instead.
      */
     public int safeStandY(int blockX, int blockZ) {
-        if (dimensionDir == null) return -1;
-        if (mainReader == null) mainReader = new RegionReader(dimensionDir);
-        NBTTagCompound level = mainReader.readChunk(blockX >> 4, blockZ >> 4);
-        if (level == null) return -1;                 // never generated
+        NBTTagCompound level = levelAt(blockX >> 4, blockZ >> 4);
+        if (level == null) return -1;                 // never generated, or not sent
 
         boolean[] occupied = new boolean[260];
         NBTTagList sections = level.getTagList("Sections", 10);
@@ -765,7 +897,26 @@ public class MapTiles {
         return -1;
     }
 
+    /**
+     * One chunk's blocks: read from the region file, or - with no files to read
+     * - from the copy the server sent the client.
+     */
+    private NBTTagCompound levelAt(int cx, int cz) {
+        if (remote) {
+            if (liveWorld == null || !liveWorld.blockExists(cx << 4, 64, cz << 4)) return null;
+            try {
+                return LiveChunks.levelOf(liveWorld.getChunkFromChunkCoords(cx, cz));
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+        if (dimensionDir == null) return null;
+        if (mainReader == null) mainReader = new RegionReader(dimensionDir);
+        return mainReader.readChunk(cx, cz);
+    }
+
     public void dispose() {
+        flushLive(true);
         DECODER.shutdownNow();
         ready.clear();
         if (mainReader != null) {
