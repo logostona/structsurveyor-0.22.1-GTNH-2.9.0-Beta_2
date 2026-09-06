@@ -2,6 +2,9 @@
 surveyor/build/
 surveyor/.gradle/
 surveyor/run/
+biomelocator/build/
+biomelocator/.gradle/
+biomelocator/run/
 __pycache__/
 *.pyc
 

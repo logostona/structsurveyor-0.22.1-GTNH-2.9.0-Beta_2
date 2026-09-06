@@ -7,9 +7,12 @@ An in-game map on a keybind, plus offline Python tools. Everything reports **whe
 information came from and how much to trust it**, because the three ways of finding a
 structure have very different reliability.
 
-[![Download structsurveyor-0.24.0.jar](https://img.shields.io/badge/download-structsurveyor--0.24.0.jar-2ea44f?style=for-the-badge)](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.24.0.jar)
+[![Download structsurveyor-0.25.0.jar](https://img.shields.io/badge/download-structsurveyor--0.25.0.jar-2ea44f?style=for-the-badge)](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.25.0.jar)
 
-One click, then drop it in `mods/`. Forge 10.13.4.1614, no dependencies.
+[![Download biomelocator-0.25.0.jar](https://img.shields.io/badge/download-biomelocator--0.25.0.jar-4c8fbd?style=for-the-badge)](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/biomelocator-0.25.0.jar)
+
+One click each, then drop them in `mods/`. Forge 10.13.4.1614, no dependencies.
+Biome Locator is a separate, optional jar - see [Finding a biome](#finding-a-biome).
 
 > **Prototype.** Detection rules are still being tuned against real worlds. Nothing here
 > modifies your save — the mod reads region files, and the Python tools are read-only —
@@ -42,7 +45,7 @@ spawner clusters
 
 ## Install
 
-[**Download `structsurveyor-0.24.0.jar`**](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.24.0.jar) and drop it into your instance's
+[**Download `structsurveyor-0.25.0.jar`**](https://github.com/logostona/structsurveyor-0.22.1-GTNH-2.9.0-Beta_2/raw/main/dist/structsurveyor-0.25.0.jar) and drop it into your instance's
 `mods/` folder. No dependencies beyond Forge. Every released build also lives in
 [`dist/`](dist/).
 
@@ -98,6 +101,73 @@ python make_map.py                   # merge everything into one HTML map
 ```
 
 ---
+
+## Finding a biome
+
+`biomelocator-<version>.jar` is a second, optional mod. It answers a different
+question: **where is biome X**, including on a server, including biomes you have never
+visited.
+
+It is separate from Structure Surveyor deliberately. Everything it does is arithmetic on
+a seed you already know, plus biome ids the server already sent your client to draw the
+world. It asks a server for nothing and reads nothing it was not given. Keeping that in
+its own jar makes the boundary something you can point at.
+
+### Why Nature's Compass sometimes cannot
+
+Nature's Compass searches by calling `World.getBiomeGenForCoordsBody(x, z)`. For a loaded
+chunk that reads stored data, but a search sweeps thousands of blocks, so essentially
+every sample falls through to `WorldChunkManager` - the **generator**. It therefore reports
+what the generator *would* produce, not what is there. Three consequences:
+
+| Limit | Default | Effect |
+|---|---|---|
+| `sampleSpaceModifier` | 32 | A biome patch narrower than 32 blocks can fall between samples |
+| `maxSamples` | 150000 | Binds before `distanceModifier`; real reach is about 6,200 blocks |
+| Generator-only | — | Cannot see biomes written *after* generation, at any radius |
+
+That last one is structural, not a setting. Thaumcraft taint rewrites the biome array as
+it spreads, so Tainted Land exists on disk while the generator has never heard of it.
+
+### Verify before you trust a coordinate
+
+Predicting where a biome is means replaying world generation, and a seed alone does not
+determine a world - **world type and every biome-affecting config are generator inputs
+too**. GTNH's world type is `RWG` ("Realistic Alpha"), not Default. A replay that has not
+been checked reproduces plausible, confident, wrong coordinates. This is the same lesson
+`/survey` learned the hard way, so the same discipline applies:
+
+```
+                          on the server you care about
+/biome sample [radius]    record real biome ids from loaded chunks
+                          walk somewhere else, run it again, repeat
+
+                          then in a local world: same seed, world type Realistic Alpha
+/biome verify <file>      does this world reproduce those recordings?
+```
+
+`verify` reports two numbers, because "it does not match" hides two very different
+failures:
+
+- **same id** — this world puts the identical biome id at the identical coordinates.
+- **consistent mapping** — each recorded id maps to one particular local id. High here but
+  low above means the *layout* is identical and only the id *numbering* differs, which is
+  a config difference and entirely survivable.
+
+Low on both means a genuinely different world: wrong seed, wrong world type, or different
+generation settings. Until one of the first two verdicts appears, no predicted coordinate
+from a local world is worth anything, and the tool says so rather than printing one.
+
+### Other commands
+
+```
+/biome here          the biome actually stored where you stand, and, in
+                     singleplayer, what the generator says - side by side
+/biome id <text>     registered biomes matching a name, with their ids
+```
+
+`/biome id lush` is how you find out that Lush Desert is id 77 in your config, which is
+what the sample files record.
 
 ## Servers
 
