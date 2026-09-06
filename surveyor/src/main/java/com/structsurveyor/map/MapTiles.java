@@ -146,7 +146,10 @@ public class MapTiles {
         this.dimensionDir = dimensionDir;
         this.imageCache = (cacheDir == null || !com.structsurveyor.Config.cacheToDisk)
             ? null : new RegionImageCache(cacheDir);
-        this.remote = dimensionDir == null || !new File(dimensionDir, "region").isDirectory();
+        // Having no save directory is the condition, not having no region files:
+        // a world created a moment ago has not written any yet, and treating
+        // that as remote would leave it reading live chunks all session.
+        this.remote = dimensionDir == null;
         if (remote && imageCache != null) liveRegions.addAll(imageCache.knownRegions());
     }
 
