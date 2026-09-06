@@ -743,13 +743,16 @@ public class MapTiles {
                 if (!canSpend(budget)) break;
                 long ck = chunkKey(cx, cz);
                 if (livePatched.contains(ck)) continue;
+                int bx = cx << 4, bz = cz << 4;
+                // Tested before the region is created, not after: a region built
+                // for a chunk the server never sent would be registered as
+                // explored and drawn as a black square forever.
+                if (!world.blockExists(bx, 64, bz)) continue;      // not loaded
                 // With no region files, this pass is the only thing that ever
                 // creates a region, so it has to be allowed to.
                 Region r = remote ? ensureRegion(cx >> 5, cz >> 5)
                                   : regions.get(key(cx >> 5, cz >> 5));
                 if (r == null || r.pixels == null) continue;
-                int bx = cx << 4, bz = cz << 4;
-                if (!world.blockExists(bx, 64, bz)) continue;      // not loaded
                 livePatched.add(ck);
                 budget[0]--;
 
